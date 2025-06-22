@@ -134,127 +134,112 @@ def schnorr_verify(p, q, g, y, message, signature):
     return ev == e  # Signature is valid if e' == e
 
 # Fungsi untuk steganografi LSB (Least Significant Bit)
-def lsb_encode_image(img_obj, data):
+def lsb_encode_image(source_image, data_to_embed, output_path=None):
     """
-    Menyembunyikan data ke dalam objek gambar dan mengembalikan objek gambar baru.
-    TIDAK memerlukan 'output_path'.
+    Menyisipkan data biner ke dalam LSB gambar.
+    Fungsi ini sekarang memiliki 'output_path' yang opsional.
+
+    Args:
+        source_image (str, PIL.Image.Image, atau file-like object): Sumber gambar.
+        data_to_embed (bytes): Data yang akan disisipkan.
+        output_path (str, optional): Path file untuk menyimpan gambar hasil. 
+                                     Jika None, gambar tidak akan disimpan ke disk.
+                                     Defaults to None.
+
+    Returns:
+        tuple: (PIL.Image.Image, int) atau (None, 0) jika gagal.
+               Mengembalikan objek gambar baru dan panjang data yang disisipkan.
     """
-    img = img_obj.convert("RGB")
-    binary_data = ''.join([format(byte, '08b') for byte in data])
-    if len(binary_data) > img.width * img.height * 3:
-        raise ValueError("Data terlalu besar untuk gambar ini")
-    
-    pixels = list(img.getdata())
-    index = 0
-    for i in range(len(pixels)):
-        pixel = list(pixels[i])
-        for j in range(3): # Loop untuk channel R, G, B
-            if index < len(binary_data):
-                pixel[j] = pixel[j] & ~1 | int(binary_data[index])
-                index += 1
-        pixels[i] = tuple(pixel)
-    
-    new_img = Image.new(img.mode, img.size)
-    new_img.putdata(pixels)
-    
-    # Mengembalikan objek gambar baru dan panjang data, BUKAN menyimpan file.
-    return new_img, len(data)
+    try:
+        # Logika pembukaan gambar yang lebih robust
+        if isinstance(source_image, str):
+            img = Image.open(source_image)
+        elif hasattr(source_image, 'stream'): # Menangani file dari request Flask
+            img = Image.open(source_image.stream)
+        elif isinstance(source_image, Image.Image):
+            img = source_image
+        else:
+            raise TypeError("Tipe source_image tidak didukung. Harus path, objek PIL.Image, atau file request Flask.")
 
-# def lsb_encode_image(image_path, data, output_path):
-#     """
-#     Embeds binary data into the least significant bit of each color channel
-#     of an image.
-#     """
-#     try:
-#         img = Image.open(image_path)
-#         img = img.convert("RGB") # Ensure image is in RGB mode
-#         # Convert bytes data to a binary string
-#         binary_data = ''.join([format(byte, '08b') for byte in data])
+        img = img.convert("RGB")
+        binary_data = ''.join([format(byte, '08b') for byte in data_to_embed])
 
-#         # Check if data fits into the image
-#         if len(binary_data) > img.width * img.height * 3: # 3 channels (R, G, B) per pixel
-#             raise ValueError("Data too large for image")
+        if len(binary_data) > img.width * img.height * 3:
+            raise ValueError("Data terlalu besar untuk disisipkan pada gambar ini")
 
-#         pixels = list(img.getdata())
-#         index = 0
+        pixels = list(img.getdata())
+        index = 0
 
-#         # Iterate through each pixel and each color channel (R, G, B)
-#         for i in range(len(pixels)):
-#             pixel = list(pixels[i]) # Convert tuple to list to modify
-#             for j in range(3):      # R, G, B channels
-#                 if index < len(binary_data):
-#                     # Clear the least significant bit (pixel[j] & ~1)
-#                     # Set the new bit ( | int(binary_data[index]))
-#                     pixel[j] = pixel[j] & ~1 | int(binary_data[index])
-#                     index += 1
-#             pixels[i] = tuple(pixel) # Convert list back to tuple
+        for i in range(len(pixels)):
+            pixel = list(pixels[i])
+            for j in range(3):
+                if index < len(binary_data):
+                    pixel[j] = pixel[j] & ~1 | int(binary_data[index])
+                    index += 1
+            pixels[i] = tuple(pixel)
 
-#         new_img = Image.new(img.mode, img.size)
-#         new_img.putdata(pixels)
-#         new_img.save(output_path)
-#         return new_img, len(data) # Return the new image object and original data length
-#     except Exception as e:
-#         print(f"Error in LSB encoding: {e}")
-#         return None, 0
+        new_img = Image.new(img.mode, img.size)
+        new_img.putdata(pixels)
 
-def lsb_decode_image(img_obj, data_length):
+        # === PERUBAHAN UTAMA DI SINI ===
+        # Hanya menyimpan jika output_path diberikan
+        if output_path:
+            new_img.save(output_path)
+        
+        return new_img, len(data_to_embed)
+
+    except Exception as e:
+        print(f"Error saat LSB encoding: {e}")
+        return None, 0
+
+def lsb_decode_image(source_image, data_length):
     """
-    Mengekstrak data dari objek gambar.
-    """
-    img = img_obj.convert("RGB")
-    pixels = list(img.getdata())
-    binary_data = []
-    index = 0
-    bits_to_read = data_length * 8
+    Mengekstrak data biner dari LSB sebuah gambar.
+    Fungsi ini fleksibel dan dapat menerima path file gambar atau objek gambar Pillow.
 
-    for pixel in pixels:
-        for value in pixel[:3]: # Loop untuk R, G, B
-            if index < bits_to_read:
-                binary_data.append(str(value & 1))
-                index += 1
-            else:
-                break
-        if index >= bits_to_read:
-            break
+    Args:
+        source_image (str or PIL.Image.Image): Path file gambar stego atau objek gambar Pillow.
+        data_length (int): Panjang data asli (dalam bytes) yang akan diekstrak.
+
+    Returns:
+        bytes: Data yang telah diekstrak dalam bentuk bytes, atau b'' jika gagal.
+    """
+    try:
+        # Periksa apakah source_image adalah path (str) atau objek gambar
+        if isinstance(source_image, str):
+            img = Image.open(source_image)
+        elif isinstance(source_image, Image.Image):
+            img = source_image
+        else:
+            raise TypeError("source_image harus berupa path (string) atau objek PIL.Image")
             
-    binary_str = ''.join(binary_data)
-    # Mengembalikan data dalam bentuk bytes
-    return bytes([int(binary_str[i:i+8], 2) for i in range(0, len(binary_str), 8)])
+        img = img.convert("RGB") # Pastikan konsistensi mode
+        pixels = list(img.getdata())
+        
+        binary_data = []
+        index = 0
+        bits_to_read = data_length * 8 # Jumlah total bit yang perlu dibaca
 
+        # Iterasi melalui piksel untuk mengekstrak LSB
+        for pixel in pixels:
+            for value in pixel[:3]:  # Channel R, G, B
+                if index < bits_to_read:
+                    binary_data.append(str(value & 1))  # Ekstrak LSB
+                    index += 1
+                else:
+                    break
+            if index >= bits_to_read:
+                break
 
-# def lsb_decode(image_path, data_length):
-#     """
-#     Extracts binary data from the least significant bit of each color channel
-#     of an image.
-#     """
-#     try:
-#         img = Image.open(image_path)
-#         img = img.convert("RGB") # Ensure image is in RGB mode for consistency
-#         pixels = list(img.getdata())
+        binary_str = ''.join(binary_data)
+        
+        # Konversi string biner kembali ke bytes
+        return bytes([int(binary_str[i:i+8], 2) for i in range(0, len(binary_str), 8)])
 
-#         binary_data = []
-#         index = 0
-#         bits_to_read = data_length * 8
-
-#         # Iterate through pixels and extract LSB
-#         for pixel in pixels:
-#             for value in pixel[:3]: # R, G, B channels
-#                 if index < bits_to_read:
-#                     binary_data.append(str(value & 1)) # Extract the LSB
-#                     index += 1
-#                 else:
-#                     break
-#             if index >= bits_to_read:
-#                 break
-
-#         binary_str = ''.join(binary_data)
-#         # Convert binary string back to bytes
-#         bytes_data = [int(binary_str[i:i+8], 2) for i in range(0, len(binary_str), 8)]
-#         return bytes(bytes_data)
-#     except Exception as e:
-#         print(f"Error in LSB decoding: {e}")
-#         return b''
-
+    except Exception as e:
+        print(f"Error saat LSB decoding: {e}")
+        return b'' # Mengembalikan byte kosong jika terjadi error
+    
 # Fungsi untuk generate kunci AES secara otomatis (16 bytes = 128 bits)
 def generate_aes_key():
     """Generates a random 16-byte (128-bit) AES key."""
@@ -290,7 +275,35 @@ def generate_schnorr_params(q_bits=16, p_bits=32):
     x = random.randint(1, q - 1)
 
     return p, q, g, x
+def parse_sender_data(filepath='sender_data.txt'):
+    """
+    Membaca file sender_data.txt yang memiliki format key-value 
+    dan mengembalikannya sebagai sebuah dictionary.
+    """
+    data = {}
+    try:
+        with open(filepath, 'r') as f:
+            full_content = f.read()
+            other_data_part = ""
+            if '-----END RSA PRIVATE KEY-----' in full_content:
+                other_data_part = full_content.split('-----END RSA PRIVATE KEY-----')[1]
 
+            for line in other_data_part.strip().split('\n'):
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    data[key.strip()] = value.strip()
+            if '-----BEGIN RSA PRIVATE KEY-----' in full_content:
+                start_index = full_content.find('-----BEGIN RSA PRIVATE KEY-----')
+                end_index = full_content.find('-----END RSA PRIVATE KEY-----') + len('-----END RSA PRIVATE KEY-----')
+                data['Private Key'] = full_content[start_index:end_index]
+                
+    except FileNotFoundError:
+        print(f"Error: File '{filepath}' tidak ditemukan.")
+        return None
+    except Exception as e:
+        print(f"Error saat mem-parsing file '{filepath}': {e}")
+        return None
+    return data
 # Fungsi utama untuk pengirim
 def sender():
     """
@@ -407,7 +420,7 @@ def receiver(sender_data):
     data_length = sender_data['data_length']
 
     print("Mengekstrak data dari gambar...")
-    extracted_data = lsb_decode(stego_image, data_length)
+    extracted_data = lsb_decode_image(stego_image, data_length)
 
     if not extracted_data or len(extracted_data) < data_length:
         print("Error: Data yang diekstrak tidak lengkap atau korup!")
@@ -504,26 +517,37 @@ def main():
             print("Pesan yang diterima adalah", "✅ ASLI DAN VALID" if is_valid else "❌ PALSU ATAU KORUP")
 
     elif choice == '2':
-        # ======================================================================
-        # KUNCI PERBAIKAN: Membaca kunci dalam format PEM dengan benar
-        # ======================================================================
         try:
+            # Variabel untuk menampung data
+            sender_data = {}
+            key_lines = []
+            is_reading_key = False
+
+            # Buka dan baca file baris per baris
             with open('sender_data.txt', 'r') as f:
-                sender_data = {}
-                key_data = ""
-                in_key = False
                 for line in f:
-                    if '-----BEGIN RSA PRIVATE KEY-----' in line:
-                        in_key = True
-                    if in_key:
-                        key_data += line
-                    if '-----END RSA PRIVATE KEY-----' in line:
-                        in_key = False
-                        # Once the key is fully read, break from adding more lines to it
-                        continue # continue to parse other lines
+                    stripped_line = line.strip()
+                    if not stripped_line: # Lewati baris kosong
+                        continue
+
+                    # Logika untuk membaca blok Private Key multi-baris
+                    if stripped_line == '-----BEGIN RSA PRIVATE KEY-----':
+                        is_reading_key = True
                     
-                    if not in_key and ':' in line:
-                        key, value = line.strip().split(': ', 1)
+                    if is_reading_key:
+                        key_lines.append(stripped_line)
+                        # Jika sudah sampai di akhir blok key, matikan flag
+                        if stripped_line == '-----END RSA PRIVATE KEY-----':
+                            is_reading_key = False
+                        continue # Lanjut ke baris berikutnya setelah menangani bagian key
+
+                    # Logika untuk membaca baris key-value biasa (selain Private Key)
+                    if ':' in stripped_line:
+                        key, value = stripped_line.split(':', 1)
+                        key = key.strip()
+                        value = value.strip()
+
+                        # Masukkan data ke dictionary sesuai kuncinya
                         if key == 'Schnorr p':
                             sender_data['p_schnorr'] = int(value)
                         elif key == 'Schnorr q':
@@ -536,21 +560,31 @@ def main():
                             sender_data['output_image'] = value
                         elif key == 'Data Length':
                             sender_data['data_length'] = int(value)
-            
-            sender_data['private_key'] = RSA.import_key(key_data)
 
+            # Setelah loop selesai, gabungkan baris-baris kunci dan impor
+            if not key_lines:
+                raise ValueError("Blok Private Key tidak ditemukan di dalam file.")
+            
+            full_key_pem = "\n".join(key_lines)
+            sender_data['private_key'] = RSA.import_key(full_key_pem)
+
+            # Panggil fungsi receiver dengan data yang sudah lengkap
             is_valid = receiver(sender_data)
+            
             print("\n🎯 === HASIL AKHIR VERIFIKASI ===")
             print("Pesan yang diterima adalah", "✅ ASLI DAN VALID" if is_valid else "❌ PALSU ATAU KORUP")
 
         except FileNotFoundError:
             print("❌ File sender_data.txt tidak ditemukan!")
             print("Silakan jalankan Demo Lengkap (pilihan 1) terlebih dahulu.")
+        except (ValueError, KeyError) as ex:
+            # Menangkap error jika ada data yang hilang atau format salah
+            print(f"❌ Error: Format file sender_data.txt tidak lengkap atau korup. ({ex})")
         except Exception as ex:
             print(f"❌ Error saat membaca atau memproses sender_data.txt: {ex}")
-            
-    else:
-        print("Pilihan tidak valid.")
+                
+        else:
+            print("Pilihan tidak valid.")
 
 if __name__ == "__main__":
     main()
